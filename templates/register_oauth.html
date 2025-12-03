@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <div class="jumbotron">
+    <div class="container">
+      <h1>
+        {% trans %}Register{% endtrans %}
+      </h1>
+    </div>
+  </div>
+
+  <div class="container">
+    <div class="row">
+      <div class="col-md-6 offset-md-3">
+        {% include "components/errors.html" %}
+        <form action="{{ google_oauth_url }}" method="GET">
+          <button class="btn btn-secondary btn-lg btn-block w-100" type="submit">
+            Login with Google
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+{% endblock %}
