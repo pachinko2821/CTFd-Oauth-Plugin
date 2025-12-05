@@ -1,7 +1,6 @@
 import os
 from flask import redirect, render_template, request, session, url_for
 from flask_babel import lazy_gettext as _l
-
 from werkzeug.routing import Rule
 from werkzeug.middleware.proxy_fix import ProxyFix
 from google_auth_oauthlib.flow import Flow
@@ -30,6 +29,13 @@ class FakeRequest():
         self.args = args
 
 def load(app):
+
+    ALLOWED_EMAILS = os.getenv("ALLOWED_EMAILS", "")
+    if not ALLOWED_EMAILS == "":
+        ALLOWED_EMAILS = ALLOWED_EMAILS.split(",")
+
+    EASTEREGG_MESSAGE = os.getenv("EASTEREGG_MESSAGE", "CTFd isn't in scope of the CTF, but thanks for trying")
+
     app.wsgi_app = ProxyFix(
         app.wsgi_app,
         x_for=1, 
@@ -257,12 +263,13 @@ def load(app):
             prompt="consent"
         )
 
-        print("done")
         session["oauth_state"] = state
+        print(f"DEBUG: {dict(session)}")
         return redirect(authorization_url)
 
     def register():
         if request.method == "GET":
+            print(f"DEBUG: {dict(session)}")
             error = request.args.get("error", False)
             next = request.args.get("next", False)
 
@@ -280,7 +287,7 @@ def load(app):
             session_state = session["oauth_state"]
 
             if not state == session_state:
-                return 403, "incorrect state" 
+                return 403, EASTEREGG_MESSAGE 
             
             # Get details from the token
             authorization_response = request.url
@@ -295,6 +302,13 @@ def load(app):
             # Register the user
             name = user.get("name", False)
             email_address = user.get("email", False)
+
+            if not email_address:
+                return 400, EASTEREGG_MESSAGE
+            
+            _authority, domain = email_address.split("@")
+            if domain not in ALLOWED_EMAILS:
+                return 400, EASTEREGG_MESSAGE
 
             # generate a random password
             password = os.urandom(32).hex()
@@ -324,13 +338,10 @@ def load(app):
     def patch_user(self):
         user = get_current_user()
         data = request.get_json()
-
-        if not user.email:
-            return {"success": False, "errors": response.errors}, 400
         
         if not user.email == data["email"]:
             data["email"] = user.email
-            data["affiliation"] = "Bruh, no touch email"
+            data["affiliation"] = EASTEREGG_MESSAGE
 
         schema = UserSchema(view="self", instance=user, partial=True)
         response = schema.load(data)
@@ -355,4 +366,4 @@ def load(app):
     UserPrivate.patch = patch_user
 
     # Add method to the register endpoint
-    app.url_map.add(Rule("/register", endpoint="auth.register", methods=["GET", "POST"]))
+    app.url_map.add(Rule("/register", endpoint="auth.register", methods=["GET"]))
