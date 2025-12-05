@@ -208,6 +208,14 @@ def load(app):
                         )
                         db.session.add(entry)
                     db.session.commit()
+
+                    log(
+                        "registrations",
+                        format="[{date}] {ip} - {name} registered with {email}",
+                        name=name,
+                        email=email_address,
+                    )
+
                 else:
                     user = Users.query.filter_by(email=email_address).first()
                     login_user(user)
@@ -235,12 +243,6 @@ def load(app):
                     ):  # We want to notify the user that they have registered.
                         email.successful_registration_notification(user.email)
 
-        log(
-            "registrations",
-            format="[{date}] {ip} - {name} registered with {email}",
-            name=user.name,
-            email=user.email,
-        )
         db.session.close()
 
         if is_teams_mode():
