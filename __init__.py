@@ -1,9 +1,11 @@
 import os
 from flask import redirect, render_template, request, session, url_for
 from flask_babel import lazy_gettext as _l
+
 from werkzeug.routing import Rule
 from werkzeug.middleware.proxy_fix import ProxyFix
-from google_auth_oauthlib.flow import Flow
+from google_auth_oauthlib.flow import Flow, InstalledAppFlow
+from oauthlib.oauth2.rfc6749.errors import MismatchingStateError
 from pathlib import Path
 import requests
 
@@ -29,13 +31,6 @@ class FakeRequest():
         self.args = args
 
 def load(app):
-
-    ALLOWED_EMAILS = os.getenv("ALLOWED_EMAILS", "")
-    if not ALLOWED_EMAILS == "":
-        ALLOWED_EMAILS = ALLOWED_EMAILS.split(",")
-
-    EASTEREGG_MESSAGE = os.getenv("EASTEREGG_MESSAGE", "CTFd isn't in scope of the CTF, but thanks for trying")
-
     app.wsgi_app = ProxyFix(
         app.wsgi_app,
         x_for=1, 
@@ -208,14 +203,6 @@ def load(app):
                         )
                         db.session.add(entry)
                     db.session.commit()
-
-                    log(
-                        "registrations",
-                        format="[{date}] {ip} - {name} registered with {email}",
-                        name=name,
-                        email=email_address,
-                    )
-
                 else:
                     user = Users.query.filter_by(email=email_address).first()
                     login_user(user)
@@ -231,18 +218,24 @@ def load(app):
                     log(
                         "registrations",
                         format="[{date}] {ip} - {name} registered (UNCONFIRMED) with {email}",
-                        name=user.name,
-                        email=user.email,
+                        name=name,
+                        email=email_address,
                     )
-                    email.verify_email_address(user.email)
+                    email.verify_email_address(email_address)
                     db.session.close()
                     return redirect(url_for("auth.confirm"))
                 else:  # Don't care about confirming users
                     if (
                         config.can_send_mail()
                     ):  # We want to notify the user that they have registered.
-                        email.successful_registration_notification(user.email)
+                        email.successful_registration_notification(email_address)
 
+        log(
+            "registrations",
+            format="[{date}] {ip} - {name} registered with {email}",
+            name=name,
+            email=email_address,
+        )
         db.session.close()
 
         if is_teams_mode():
@@ -259,64 +252,71 @@ def load(app):
 
     @app.route("/oauth/init", methods=["GET"])
     def oauth_init():
-        authorization_url, state = flow.authorization_url(
+        # Create a fresh Flow instance for each user
+        init_flow = Flow.from_client_secrets_file(
+            client_secrets,
+            GOOGLE_SCOPES,
+            redirect_uri=REDIRECT_URI
+        )
+        authorization_url, state = init_flow.authorization_url(
             include_granted_scopes="true",
             access_type="offline",
             prompt="consent"
         )
-
+        # Bind state to this user's session
         session["oauth_state"] = state
-        print(f"DEBUG: {dict(session)}")
         return redirect(authorization_url)
 
     def register():
         if request.method == "GET":
-            print(f"DEBUG: {dict(session)}")
             error = request.args.get("error", False)
-            next = request.args.get("next", False)
+            next_url = request.args.get("next", False)
 
             if error:
-                return 403, "error"
+                return "OAuth error occurred", 403
             
             code = request.args.get("code", False)
             if not code:
+                # No code means user is visiting register page, show OAuth button
                 dir_path = Path(__file__).parent.resolve()
                 template_path = dir_path / 'templates' / 'register_oauth.html'
                 override_template('register.html', open(template_path).read())
                 return render_template('register.html', google_oauth_url="/oauth/init")
             
             state = request.args.get("state", False)
-            session_state = session["oauth_state"]
+            session_state = session.pop("oauth_state", None)  # Single-use: consume state immediately
 
-            if not state == session_state:
-                return 403, EASTEREGG_MESSAGE 
+            if not state or not session_state or state != session_state:
+                return "Invalid or expired OAuth state. Please try again.", 403
             
             # Get details from the token
+            # Create a new flow instance with the state from the session
+            callback_flow = Flow.from_client_secrets_file(
+                client_secrets,
+                GOOGLE_SCOPES,
+                redirect_uri=REDIRECT_URI,
+                state=session_state
+            )
             authorization_response = request.url
-            flow.fetch_token(authorization_response=authorization_response)
-
-            credentials = flow.credentials
+            try:
+                callback_flow.fetch_token(authorization_response=authorization_response)
+            except MismatchingStateError:
+                return "State mismatch error. Please try again.", 403
+            credentials = callback_flow.credentials
             user = get_user_details(credentials.token)
 
             if not set(credentials.granted_scopes) == set(GOOGLE_SCOPES):
-                return 403, "not all requested scopes were granted"
+                return "Not all requested scopes were granted", 403
 
             # Register the user
             name = user.get("name", False)
             email_address = user.get("email", False)
 
-            if not email_address:
-                return 400, EASTEREGG_MESSAGE
-            
-            _authority, domain = email_address.split("@")
-            if domain not in ALLOWED_EMAILS:
-                return 400, EASTEREGG_MESSAGE
-
             # generate a random password
             password = os.urandom(32).hex()
 
             # random details
-            website = "https://phonepe.com"
+            website = "https://google.com"
             affiliation = "affiliation"
             country = "IN"
 
@@ -330,7 +330,7 @@ def load(app):
             }
 
             fake_args = {
-                "next": next
+                "next": next_url
             }
 
             fake_request = FakeRequest(fake_form, fake_args)
@@ -340,10 +340,14 @@ def load(app):
     def patch_user(self):
         user = get_current_user()
         data = request.get_json()
+
+        if not user.email:
+            return {"success": False, "errors": response.errors}, 400
         
+        # Disallow email updates
         if not user.email == data["email"]:
             data["email"] = user.email
-            data["affiliation"] = EASTEREGG_MESSAGE
+            data["affiliation"] = "Bruh, no touch email"
 
         schema = UserSchema(view="self", instance=user, partial=True)
         response = schema.load(data)
@@ -368,4 +372,4 @@ def load(app):
     UserPrivate.patch = patch_user
 
     # Add method to the register endpoint
-    app.url_map.add(Rule("/register", endpoint="auth.register", methods=["GET"]))
+    app.url_map.add(Rule("/register", endpoint="auth.register", methods=["GET", "POST"]))
