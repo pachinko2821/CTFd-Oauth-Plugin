@@ -11,7 +11,11 @@ This CTFd plugin enables **Google OAuth-based user registration**.
   - Google name  
   - Google email  
   - Random strong password  
-- Prevents users from changing their email  
+- Prevents users from changing their email
+
+## Note before you use this
+
+- The plugin DOES NOT check email domains when registering. If you are hosting a private CTF, make sure you keep your oauth client private when registering it on Google Cloud. That should be enough.
 
 ---
 
